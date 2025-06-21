@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -40,7 +41,7 @@ structstruck::strike! {
             }>>,
         }>,
         builds: Option<struct {
-            built: HashMap<String, bool>,
+            built: IndexMap<String, bool>,
             failed: Vec<String>,
             stderr: Vec<String>,
             msgs: Vec<String>,
@@ -184,7 +185,7 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
         .map(|s| format!("{s}^out"))
         .collect::<Vec<_>>();
     let mut shellout = Command::new("nix")
-        .args(["build", "--log-format", "internal-json"])
+        .args(["build", "--log-format", "internal-json", "--no-link"])
         .args(root_outs)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
