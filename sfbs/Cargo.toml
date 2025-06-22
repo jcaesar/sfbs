@@ -4,6 +4,10 @@ description = "Sysflake build status"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "sfbs"
+path = "main.rs"
+
 [dependencies]
 indexmap = { version = "2.9.0", features = ["serde"] }
 nix-compat = { git = "https://github.com/tvlfyi/tvix/", version = "0.1.0", default-features = false }
