@@ -50,17 +50,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 
 [[package]]
-name = "ci"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "nix-compat",
- "serde",
- "serde_json",
- "structstruck",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,6 +403,17 @@ dependencies = [
  "memchr",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sfbs"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "nix-compat",
+ "serde",
+ "serde_json",
+ "structstruck",
 ]
 
 [[package]]

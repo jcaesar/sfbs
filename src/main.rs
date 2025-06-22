@@ -7,12 +7,13 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 fn main() {
-    let flakes = [
-        "github:jcaesar/njx",
-        "git+ssh://github.com/jcaesar/tunixgut",
-    ];
+    let flakes = std::env::var("SFBS_SYSFLAKES")
+        .expect("SFBS_SYSFLAKES env var not set")
+        .split(",")
+        .map(Into::into)
+        .collect::<Vec<String>>();
     let mut out = Main::default();
-    for flake in flakes {
+    for flake in &flakes {
         out.evals.insert(flake.into(), evals(flake));
     }
     out.builds = Some(build(
@@ -22,10 +23,18 @@ fn main() {
             .flat_map(|e| e.values())
             .filter_map(|e| e.drv.as_deref()),
     ));
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&out).expect("Output struct should serialize")
-    );
+
+    match std::env::var_os("SFBS_OUTPUT") {
+        None => println!(
+            "{}",
+            serde_json::to_string_pretty(&out).expect("Output struct should serialize")
+        ),
+        Some(outpath) => std::fs::write(
+            outpath,
+            serde_json::to_string(&out).expect("Output struct should serialize"),
+        )
+        .expect("Failed to write result"),
+    }
 }
 
 structstruck::strike! {
