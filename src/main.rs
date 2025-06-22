@@ -258,10 +258,14 @@ fn outputs_exist(drv: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // nom parses the actual human-facing output messages, console escape codes including, to get the status. brr.
     // while it's a little more resource intensive, i'll just parse the derivation and check whether the outputs exist.
     // (not that that's foolproof either)
-    let drv = rix::derivations::load_derivation(drv)?;
+    use nix_compat::derivation::Derivation;
+    let drv = std::fs::read(drv)?;
+    let drv = Derivation::from_aterm_bytes(&drv).map_err(|e| format!("{e:?}"))?;
     for output in drv.outputs.values() {
-        if !std::fs::exists(&output.path)? {
-            return Ok(false);
+        if let Some(path) = &output.path {
+            if !std::fs::exists(&path.name())? {
+                return Ok(false);
+            }
         }
     }
     Ok(true)
