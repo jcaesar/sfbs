@@ -272,7 +272,7 @@ fn outputs_exist(drv: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let drv = Derivation::from_aterm_bytes(&drv).map_err(|e| format!("{e:?}"))?;
     for output in drv.outputs.values() {
         if let Some(path) = &output.path {
-            if !std::fs::exists(&path.name())? {
+            if !std::fs::exists(path.to_absolute_path())? {
                 return Ok(false);
             }
         }
