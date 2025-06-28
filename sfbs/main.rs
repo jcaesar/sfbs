@@ -1,18 +1,20 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use indexmap::IndexMap;
+use data::*;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 fn main() {
+    let mut out = Main::default();
+    out.build_times.start = unix_ts();
     let flakes = std::env::var("SFBS_SYSFLAKES")
         .expect("SFBS_SYSFLAKES env var not set")
         .split(",")
         .map(Into::into)
         .collect::<Vec<String>>();
-    let mut out = Main::default();
     for flake in &flakes {
         out.evals.insert(flake.into(), evals(flake));
     }
@@ -23,6 +25,7 @@ fn main() {
             .flat_map(|e| e.values())
             .filter_map(|e| e.drv.as_deref()),
     ));
+    out.build_times.end = unix_ts();
 
     match std::env::var_os("SFBS_OUTPUT") {
         None => println!(
@@ -37,43 +40,11 @@ fn main() {
     }
 }
 
-structstruck::strike! {
-    struct Main {
-        #![structstruck::each[derive(serde::Serialize, Default)]]
-        evals: HashMap<String, struct {
-            lock: Option<NixDeserialized<MetadataInfo>>,
-            hosts: Option<NixDeserialized<Vec<String>>>,
-            eval: Option<HashMap<String, struct {
-                drv: Option<String>,
-                msgs: Vec<String>,
-                stderr: Vec<String>,
-            }>>,
-        }>,
-        builds: Option<struct {
-            built: IndexMap<String, bool>,
-            failed: Vec<String>,
-            stderr: Vec<String>,
-            msgs: Vec<String>,
-        }>,
-    }
-}
-
-structstruck::strike! {
-    struct MetadataInfo {
-        #![structstruck::each[derive(serde::Deserialize, serde::Serialize, Default)]]
-
-        #[serde(alias = "resolvedUrl")]
-        resolved_url: String,
-        locked: struct {
-            rev: String,
-        }
-    }
-}
-
-#[derive(serde::Serialize, Default)]
-struct NixDeserialized<T> {
-    log: String,
-    data: Option<Result<T, String>>,
+fn unix_ts() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| d.as_secs().try_into().ok())
 }
 
 #[derive(serde::Deserialize)]

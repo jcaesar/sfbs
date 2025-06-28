@@ -1,0 +1,14 @@
+[package]
+name = "data"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "data"
+path = "lib.rs"
+
+[dependencies]
+fully_pub = "0.1.4"
+indexmap = { version = "2.9.0", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
+structstruck = "0.5.1"
