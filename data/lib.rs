@@ -23,6 +23,7 @@ structstruck::strike! {
             stderr: Vec<String>,
             msgs: Vec<String>,
         }>,
+        #[serde(default)]
         build_times: struct {
             start: Option<i64>,
             end: Option<i64>,
@@ -40,7 +41,7 @@ structstruck::strike! {
         locked: struct {
             rev: String,
             #[serde(alias = "lastModified")]
-            last_modfied: i64,
+            last_modfied: Option<i64>,
         }
     }
 }

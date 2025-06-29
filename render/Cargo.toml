@@ -10,3 +10,4 @@ futures-signals = "0.3.34"
 reqwasm = "0.5.0"
 serde_json = "1.0.140"
 silkenweb = "0.10.0"
+web-log = { version = "1.0.1", features = ["std"] }
