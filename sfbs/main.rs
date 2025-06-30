@@ -158,6 +158,7 @@ structstruck::strike! {
 }
 fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
     let mut ret = Builds::default();
+    let mut running = HashMap::<u64, String>::new();
     ret.built = root_drvs.map(|d| (d.to_owned(), false)).collect();
     let root_outs = ret
         .built
@@ -186,7 +187,6 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
         let out = line
             .strip_prefix(b"@nix ")
             .and_then(|msg| serde_json::from_slice::<BuildOutput>(msg).ok());
-        let mut running = HashMap::<u64, String>::new();
         use BuildOutputAction::*;
         match out {
             Some(BuildOutput {
