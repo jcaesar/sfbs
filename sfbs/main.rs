@@ -173,6 +173,11 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
             "--no-link",
             "--keep-going",
         ])
+        .args(
+            std::env::var("SFBS_BUILD_ARGS")
+                .map(unescape_split)
+                .unwrap_or(vec![]),
+        )
         .args(root_outs)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -255,4 +260,26 @@ fn outputs_exist(drv: &str) -> Result<bool, Box<dyn std::error::Error>> {
         }
     }
     Ok(true)
+}
+
+fn unescape_split(inp: String) -> Vec<String> {
+    if inp.is_empty() {
+        return vec![];
+    }
+    let mut ret = vec![String::new()];
+    let mut escaped = false;
+    for c in inp.chars() {
+        if c == '\\' && !escaped {
+            escaped = true;
+            continue;
+        }
+        if c == ' ' && !escaped {
+            ret.push(String::new());
+            continue;
+        }
+        let len = ret.len();
+        ret[len - 1].push(c);
+        escaped = false;
+    }
+    ret
 }
