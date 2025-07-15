@@ -1,11 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use data::*;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+
+type DepInfo = HashMap<Rc<String>, Vec<Rc<String>>>;
 
 fn main() {
     let mut out = Main::default();
@@ -15,15 +19,18 @@ fn main() {
         .split(",")
         .map(Into::into)
         .collect::<Vec<String>>();
+    let mut deps = HashMap::new();
     for flake in &flakes {
-        out.evals.insert(flake.into(), evals(flake));
+        out.evals.insert(flake.into(), evals(flake, &mut deps));
     }
+    let rdeps = make_machine_deps(&out.evals, &deps);
     out.builds = Some(build(
         out.evals
             .values()
             .filter_map(|e| e.eval.as_ref())
             .flat_map(|e| e.values())
             .filter_map(|e| e.drv.as_deref()),
+        rdeps,
     ));
     out.build_times.end = unix_ts();
 
@@ -37,6 +44,59 @@ fn main() {
             serde_json::to_string(&out).expect("Output struct should serialize"),
         )
         .expect("Failed to write result"),
+    }
+}
+
+fn make_machine_deps(
+    evals: &HashMap<String, Evals>,
+    deps: &DepInfo,
+) -> HashMap<String, HashSet<Rc<String>>> {
+    let mut r = HashMap::new();
+    for eval in evals.values() {
+        if let Some(eval) = &eval.eval {
+            for host in eval.values() {
+                if let Some(drv) = &host.drv {
+                    let drv = Rc::new(drv.to_owned());
+                    add_me_to_deps(&mut r, deps, drv.clone(), drv);
+                }
+            }
+        }
+    }
+    fn add_me_to_deps(
+        r: &mut HashMap<String, HashSet<Rc<String>>>,
+        dep_info: &DepInfo,
+        host: Rc<String>,
+        node: Rc<String>,
+    ) {
+        stacker::maybe_grow(2048, 1 << 20, || {
+            if let Some(deps) = dep_info.get(&node) {
+                for dep in deps {
+                    let new = r.entry(dep.to_string()).or_default().insert(host.clone());
+                    if new {
+                        add_me_to_deps(r, dep_info, host.clone(), dep.clone());
+                    }
+                }
+            }
+        })
+    }
+    r
+}
+
+fn read_deps(drv: String, deps: &mut DepInfo) -> Rc<String> {
+    use std::collections::hash_map::Entry::*;
+    let key = Rc::new(drv);
+    if let Occupied(entry) = deps.entry(key.clone()) {
+        entry.key().clone()
+    } else {
+        stacker::maybe_grow(2048, 1 << 20, || {
+            let rec = read_drv(&key)
+                .iter()
+                .flat_map(|drv| drv.input_derivations.keys())
+                .map(|inp| read_deps(inp.to_absolute_path(), deps))
+                .collect::<Vec<_>>();
+            deps.insert(key.clone(), rec);
+            key
+        })
     }
 }
 
@@ -58,7 +118,7 @@ fn get_nix_des<T>(inp: &Option<NixDeserialized<T>>) -> Option<&T> {
         .and_then(|inp| inp.as_ref().ok())
 }
 
-fn evals(flake: &str) -> Evals {
+fn evals(flake: &str, deps: &mut DepInfo) -> Evals {
     let mut ret = Evals::default();
     ret.lock = Some(nix_and_deserialize(&[
         "flake",
@@ -79,13 +139,18 @@ fn evals(flake: &str) -> Evals {
             ])
         });
         if let Some(hosts) = get_nix_des(&ret.hosts) {
-            ret.eval = Some(hosts.iter().map(|host| eval_host(&locked, host)).collect());
+            ret.eval = Some(
+                hosts
+                    .iter()
+                    .map(|host| eval_host(&locked, host, deps))
+                    .collect(),
+            );
         }
     }
     ret
 }
 
-fn eval_host(locked: &str, host: &str) -> (String, Eval) {
+fn eval_host(locked: &str, host: &str, deps: &mut DepInfo) -> (String, Eval) {
     let mut ret = Eval::default();
     let host_path =
         format!("{locked}#nixosConfigurations.{host}.config.system.build.toplevel.drvPath");
@@ -110,10 +175,10 @@ fn eval_host(locked: &str, host: &str) -> (String, Eval) {
             }
         }
         if shellout.status.success() {
-            ret.drv = Some(
-                String::from_utf8(shellout.stdout)
-                    .expect("Non-UTF8 derivation path. Try annoying somebody else."),
-            );
+            let drv = String::from_utf8(shellout.stdout)
+                .expect("Non-UTF8 derivation path. Try annoying somebody else.");
+            read_deps(drv.clone(), deps);
+            ret.drv = Some(drv);
         }
     }
     (host.to_owned(), ret)
@@ -156,7 +221,10 @@ structstruck::strike! {
         }>
     }
 }
-fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
+fn build<'a>(
+    root_drvs: impl Iterator<Item = &'a str>,
+    rdep_info: HashMap<String, HashSet<Rc<String>>>,
+) -> Builds {
     let mut ret = Builds::default();
     let mut running = HashMap::<u64, String>::new();
     ret.built = root_drvs.map(|d| (d.to_owned(), false)).collect();
@@ -224,7 +292,18 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
                                 *built = true;
                             }
                         }
-                        Ok(false) => ret.failed.push(drv),
+                        Ok(false) => {
+                            if let Some(rdep) = rdep_info.get(&drv) {
+                                for host in rdep {
+                                    ret.deps_failed
+                                        .entry(String::clone(host))
+                                        .or_default()
+                                        .push(drv.clone());
+                                }
+                            }
+                            let log = build_log(&drv);
+                            ret.failed_logs.insert(drv, log);
+                        }
                         Err(e) => eprintln!("{e:?}"),
                     }
                 }
@@ -244,15 +323,23 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
     ret
 }
 
+fn build_log(drv: &str) -> Option<(String, String)> {
+    let shellout = Command::new("nix")
+        .args(["log", drv])
+        .output()
+        .expect("failed to execute process");
+    Some((
+        String::from_utf8_lossy(&shellout.stdout).into_owned(),
+        String::from_utf8_lossy(&shellout.stderr).into_owned(),
+    ))
+}
+
 fn outputs_exist(drv: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // nix's json output only reports that the build ended, but not whether it succeeded
     // nom parses the actual human-facing output messages, console escape codes including, to get the status. brr.
     // while it's a little more resource intensive, i'll just parse the derivation and check whether the outputs exist.
     // (not that that's foolproof either)
-    use nix_compat::derivation::Derivation;
-    let drv = std::fs::read(drv)?;
-    let drv = Derivation::from_aterm_bytes(&drv).map_err(|e| format!("{e:?}"))?;
-    for output in drv.outputs.values() {
+    for output in read_drv(drv)?.outputs.values() {
         if let Some(path) = &output.path {
             if !std::fs::exists(path.to_absolute_path())? {
                 return Ok(false);
@@ -260,6 +347,13 @@ fn outputs_exist(drv: &str) -> Result<bool, Box<dyn std::error::Error>> {
         }
     }
     Ok(true)
+}
+
+fn read_drv(drv: &str) -> Result<nix_compat::derivation::Derivation, Box<dyn Error + 'static>> {
+    use nix_compat::derivation::Derivation;
+    let drv = std::fs::read(drv)?;
+    let drv = Derivation::from_aterm_bytes(&drv).map_err(|e| format!("{e:?}"))?;
+    Ok(drv)
 }
 
 fn unescape_split(inp: String) -> Vec<String> {

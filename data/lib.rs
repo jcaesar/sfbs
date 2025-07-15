@@ -19,9 +19,10 @@ structstruck::strike! {
         }>,
         builds: Option<struct {
             built: IndexMap<String, bool>,
-            failed: Vec<String>,
             stderr: Vec<String>,
             msgs: Vec<String>,
+            deps_failed: HashMap<String, Vec<String>>,
+            failed_logs: HashMap<String, Option<(String, String)>>,
         }>,
         #[serde(default)]
         build_times: struct {
