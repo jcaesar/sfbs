@@ -166,7 +166,13 @@ fn build<'a>(root_drvs: impl Iterator<Item = &'a str>) -> Builds {
         .map(|s| format!("{s}^out"))
         .collect::<Vec<_>>();
     let mut shellout = Command::new("nix")
-        .args(["build", "--log-format", "internal-json", "--no-link"])
+        .args([
+            "build",
+            "--log-format",
+            "internal-json",
+            "--no-link",
+            "--keep-going",
+        ])
         .args(root_outs)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
