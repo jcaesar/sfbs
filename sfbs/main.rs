@@ -13,7 +13,7 @@ type DepInfo = HashMap<Rc<String>, Vec<Rc<String>>>;
 
 fn main() {
     let mut out = Main::default();
-    out.build_times.start = unix_ts();
+    out.meta.start_time = unix_ts();
     let flakes = std::env::var("SFBS_SYSFLAKES")
         .expect("SFBS_SYSFLAKES env var not set")
         .split(",")
@@ -32,7 +32,7 @@ fn main() {
             .filter_map(|e| e.drv.as_deref()),
         rdeps,
     ));
-    out.build_times.end = unix_ts();
+    out.meta.end_time = unix_ts();
 
     match std::env::var_os("SFBS_OUTPUT") {
         None => println!(

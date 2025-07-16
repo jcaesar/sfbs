@@ -24,10 +24,12 @@ structstruck::strike! {
             deps_failed: HashMap<String, Vec<String>>,
             failed_logs: HashMap<String, Option<(String, String)>>,
         }>,
-        #[serde(default)]
-        build_times: struct {
-            start: Option<i64>,
-            end: Option<i64>,
+        #[serde(default, alias = "build_times")]
+        meta: struct {
+            #[serde(alias = "start")]
+            start_time: Option<i64>,
+            #[serde(alias = "end")]
+            end_time: Option<i64>,
         },
     }
 }

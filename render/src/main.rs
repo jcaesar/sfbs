@@ -75,8 +75,8 @@ fn app(results: &str) -> Node {
             match data(&link).await {
                 Ok(data) => {
                     let end = data
-                        .build_times
-                        .end
+                        .meta
+                        .end_time
                         .and_then(|end| DateTime::from_timestamp(end, 0));
                     run.set(match end {
                         Some(end) => RunStatus::BuiltOn(end),
