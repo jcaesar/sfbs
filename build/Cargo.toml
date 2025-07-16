@@ -1,11 +1,11 @@
 [package]
-name = "sfbs"
+name = "build"
 description = "Sysflake build status"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "sfbs"
+name = "sfbs-build"
 path = "main.rs"
 
 [dependencies]
