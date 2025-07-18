@@ -328,9 +328,20 @@ fn build_log(drv: &str) -> Option<(String, String)> {
         .args(["log", drv])
         .output()
         .expect("failed to execute process");
+    let max_log = 20480;
+    fn last(data: &[u8], len: usize) -> String {
+        let mut chunk = data.rchunks(len).next().unwrap_or(b"");
+        fn is_utf8_char_boundary(n: u8) -> bool {
+            n < 128 || n >= 192
+        }
+        while chunk.len() > 0 && !is_utf8_char_boundary(chunk[0]) {
+            chunk = &chunk[1..];
+        }
+        String::from_utf8_lossy(chunk).into_owned()
+    }
     Some((
-        String::from_utf8_lossy(&shellout.stdout).into_owned(),
-        String::from_utf8_lossy(&shellout.stderr).into_owned(),
+        last(&shellout.stdout, max_log),
+        last(&shellout.stderr, max_log),
     ))
 }
 
