@@ -139,10 +139,11 @@ fn evals(flake: &str, deps: &mut DepInfo) -> Evals {
             ])
         });
         if let Some(hosts) = get_nix_des(&ret.hosts) {
+            println!("Flake {flake} ({locked}) has hosts: {}", hosts.join(", "));
             ret.eval = Some(
                 hosts
                     .iter()
-                    .map(|host| eval_host(&locked, host, deps))
+                    .map(|host| eval_host(&locked, flake, host, deps))
                     .collect(),
             );
         }
@@ -150,7 +151,7 @@ fn evals(flake: &str, deps: &mut DepInfo) -> Evals {
     ret
 }
 
-fn eval_host(locked: &str, host: &str, deps: &mut DepInfo) -> (String, Eval) {
+fn eval_host(locked: &str, flake: &str, host: &str, deps: &mut DepInfo) -> (String, Eval) {
     let mut ret = Eval::default();
     let host_path =
         format!("{locked}#nixosConfigurations.{host}.config.system.build.toplevel.drvPath");
@@ -177,8 +178,14 @@ fn eval_host(locked: &str, host: &str, deps: &mut DepInfo) -> (String, Eval) {
         if shellout.status.success() {
             let drv = String::from_utf8(shellout.stdout)
                 .expect("Non-UTF8 derivation path. Try annoying somebody else.");
+            println!("{flake}#{host} evaluated to {drv}");
             read_deps(drv.clone(), deps);
             ret.drv = Some(drv);
+        } else {
+            println!(
+                "{locked}#{host} failed to evaluate:\n{}\n",
+                ret.msgs.join("\n")
+            )
         }
     }
     (host.to_owned(), ret)
@@ -272,14 +279,20 @@ fn build<'a>(
                 action: Msg,
                 msg: Some(msg),
                 ..
-            }) => ret.msgs.push(msg),
+            }) => {
+                println!("{}", msg);
+                ret.msgs.push(msg);
+            }
             Some(BuildOutput {
                 action: Start,
                 id: Some(id),
                 typ: Some(105),
                 fields: Some(BuildOutputFields::StartBuild(drv, _, _, _)),
                 ..
-            }) => drop(running.insert(id, drv)),
+            }) => {
+                println!("Building {drv}");
+                running.insert(id, drv);
+            }
             Some(BuildOutput {
                 action: Stop,
                 id: Some(id),
@@ -288,11 +301,13 @@ fn build<'a>(
                 if let Some(drv) = running.remove(&id) {
                     match outputs_exist(&drv) {
                         Ok(true) => {
+                            println!("Built {drv}.");
                             if let Some(built) = ret.built.get_mut(&drv) {
                                 *built = true;
                             }
                         }
                         Ok(false) => {
+                            println!("Failed to build {drv}.");
                             if let Some(rdep) = rdep_info.get(&drv) {
                                 for host in rdep {
                                     ret.deps_failed
