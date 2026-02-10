@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use data::*;
@@ -11,14 +13,26 @@ use serde::de::DeserializeOwned;
 
 type DepInfo = HashMap<Rc<String>, Vec<Rc<String>>>;
 
+#[derive(clap::Parser, Debug, Clone)]
+#[command(version, about)]
+struct Args {
+    #[arg(short, long, required = true)]
+    sysflake: Vec<String>,
+    #[arg(short, long, env = "SFBS_OUTPUT", value_parser)]
+    output: clio::Output,
+    #[arg(short, long, env = "SFBS_BUILD_ARGS")]
+    build_args: Option<String>,
+    #[arg(short, long, env = "SFBS_LINKS", value_parser = clap::value_parser!(clio::ClioPath).exists().is_dir())]
+    links: Option<clio::ClioPath>,
+}
+
+static ARGS: LazyLock<Args> = LazyLock::new(clap::Parser::parse);
+
 fn main() {
+    LazyLock::force(&ARGS);
     let mut out = Main::default();
     out.meta.start_time = unix_ts();
-    let flakes = std::env::var("SFBS_SYSFLAKES")
-        .expect("SFBS_SYSFLAKES env var not set")
-        .split(",")
-        .map(Into::into)
-        .collect::<Vec<String>>();
+    let flakes = ARGS.sysflake.to_owned();
     let mut deps = HashMap::new();
     for flake in &flakes {
         out.evals.insert(flake.into(), evals(flake, &mut deps));
@@ -34,17 +48,11 @@ fn main() {
     ));
     out.meta.end_time = unix_ts();
 
-    match std::env::var_os("SFBS_OUTPUT") {
-        None => println!(
-            "{}",
-            serde_json::to_string_pretty(&out).expect("Output struct should serialize")
-        ),
-        Some(outpath) => std::fs::write(
-            outpath,
-            serde_json::to_string(&out).expect("Output struct should serialize"),
-        )
-        .expect("Failed to write result"),
-    }
+    let out = serde_json::to_string_pretty(&out).expect("Output struct should serialize");
+    ARGS.to_owned()
+        .output
+        .write_all(out.as_bytes())
+        .expect("Failed to write result");
 }
 
 fn make_machine_deps(
@@ -249,8 +257,9 @@ fn build<'a>(
             "--keep-going",
         ])
         .args(
-            std::env::var("SFBS_BUILD_ARGS")
-                .map(unescape_split)
+            ARGS.build_args
+                .as_ref()
+                .map(|args| unescape_split(args))
                 .unwrap_or(vec![]),
         )
         .args(root_outs)
@@ -305,6 +314,7 @@ fn build<'a>(
                             if let Some(built) = ret.built.get_mut(&drv) {
                                 *built = true;
                             }
+                            keep_outputs(&drv);
                         }
                         Ok(false) => {
                             println!("Failed to build {drv}.");
@@ -333,6 +343,9 @@ fn build<'a>(
                 Ok(v) => *built = v,
                 Err(e) => eprintln!("{e:?}"),
             }
+        }
+        if *built {
+            keep_outputs(drv);
         }
     }
     ret
@@ -382,7 +395,7 @@ fn read_drv(drv: &str) -> Result<nix_compat::derivation::Derivation, Box<dyn Err
     Ok(drv)
 }
 
-fn unescape_split(inp: String) -> Vec<String> {
+fn unescape_split(inp: &str) -> Vec<String> {
     if inp.is_empty() {
         return vec![];
     }
@@ -402,4 +415,20 @@ fn unescape_split(inp: String) -> Vec<String> {
         escaped = false;
     }
     ret
+}
+
+fn keep_outputs(drv: &str) {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    if let Some(dir) = ARGS.links.as_ref() {
+        let i = COUNT.fetch_add(1, Ordering::SeqCst);
+        let b = format!("{drv}^*");
+        let o = dir.path().to_owned().join(format!("b{i}"));
+        Command::new("nix")
+            .arg("build")
+            .arg("-o")
+            .arg(o.as_os_str())
+            .arg(b)
+            .status()
+            .ok();
+    };
 }
