@@ -22,8 +22,14 @@ struct Args {
     output: clio::Output,
     #[arg(short, long, env = "SFBS_BUILD_ARGS")]
     build_args: Option<String>,
+
+    /// Keep links to toplevel derivations
+    ///
+    /// If you have keep-outputs enabled in nix.conf, this will also mean that partial builds won't be GC'ed. Helpful if you run out of disk space during building.
     #[arg(short, long, env = "SFBS_LINKS", value_parser = clap::value_parser!(clio::ClioPath).exists().is_dir())]
     links: Option<clio::ClioPath>,
+    #[arg(long, env = "SFBS_GC_AFTER_LINK")]
+    gc_after_link: bool,
 }
 
 static ARGS: LazyLock<Args> = LazyLock::new(clap::Parser::parse);
@@ -36,6 +42,12 @@ fn main() {
     let mut deps = HashMap::new();
     for flake in &flakes {
         out.evals.insert(flake.into(), evals(flake, &mut deps));
+    }
+    if ARGS.gc_after_link {
+        Command::new("nix")
+            .args(["store", "gc"])
+            .output()
+            .expect("failed to execute gc");
     }
     let rdeps = make_machine_deps(&out.evals, &deps);
     out.builds = Some(build(
@@ -187,6 +199,7 @@ fn eval_host(locked: &str, flake: &str, host: &str, deps: &mut DepInfo) -> (Stri
             let drv = String::from_utf8(shellout.stdout)
                 .expect("Non-UTF8 derivation path. Try annoying somebody else.");
             println!("{flake}#{host} evaluated to {drv}");
+            keep_drv(&drv);
             read_deps(drv.clone(), deps);
             ret.drv = Some(drv);
         } else {
@@ -314,7 +327,6 @@ fn build<'a>(
                             if let Some(built) = ret.built.get_mut(&drv) {
                                 *built = true;
                             }
-                            keep_outputs(&drv);
                         }
                         Ok(false) => {
                             println!("Failed to build {drv}.");
@@ -343,9 +355,6 @@ fn build<'a>(
                 Ok(v) => *built = v,
                 Err(e) => eprintln!("{e:?}"),
             }
-        }
-        if *built {
-            keep_outputs(drv);
         }
     }
     ret
@@ -417,17 +426,16 @@ fn unescape_split(inp: &str) -> Vec<String> {
     ret
 }
 
-fn keep_outputs(drv: &str) {
+fn keep_drv(drv: &str) {
     static COUNT: AtomicU32 = AtomicU32::new(0);
     if let Some(dir) = ARGS.links.as_ref() {
         let i = COUNT.fetch_add(1, Ordering::SeqCst);
-        let b = format!("{drv}^*");
         let o = dir.path().to_owned().join(format!("b{i}"));
         Command::new("nix")
             .arg("build")
             .arg("-o")
             .arg(o.as_os_str())
-            .arg(b)
+            .arg(drv)
             .status()
             .ok();
     };
