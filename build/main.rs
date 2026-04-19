@@ -3,9 +3,10 @@ use std::error::Error;
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{LazyLock, mpsc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data::*;
 use serde::Deserialize;
@@ -34,6 +35,16 @@ struct Args {
 
 static ARGS: LazyLock<Args> = LazyLock::new(clap::Parser::parse);
 
+enum BuildStateE {
+    Start,
+    Success,
+    Fail,
+}
+struct BuildState {
+    drv: String,
+    state: BuildStateE,
+}
+
 fn main() {
     LazyLock::force(&ARGS);
     let mut out = Main::default();
@@ -50,6 +61,9 @@ fn main() {
             .expect("failed to execute gc");
     }
     let rdeps = make_machine_deps(&out.evals, &deps);
+
+    let (building_send, building_recv) = mpsc::channel();
+    std::thread::spawn(move || debounce_report(building_recv));
     out.builds = Some(build(
         out.evals
             .values()
@@ -57,6 +71,7 @@ fn main() {
             .flat_map(|e| e.values())
             .filter_map(|e| e.drv.as_deref()),
         rdeps,
+        building_send,
     ));
     out.meta.end_time = unix_ts();
 
@@ -249,9 +264,11 @@ structstruck::strike! {
         }>
     }
 }
+
 fn build<'a>(
     root_drvs: impl Iterator<Item = &'a str>,
     rdep_info: HashMap<String, HashSet<Rc<String>>>,
+    running_modified: mpsc::Sender<BuildState>,
 ) -> Builds {
     let mut ret = Builds::default();
     let mut running = HashMap::<u64, String>::new();
@@ -312,8 +329,13 @@ fn build<'a>(
                 fields: Some(BuildOutputFields::StartBuild(drv, _, _, _)),
                 ..
             }) => {
-                println!("Building {drv}");
-                running.insert(id, drv);
+                running.insert(id, drv.clone());
+                running_modified
+                    .send(BuildState {
+                        drv,
+                        state: BuildStateE::Start,
+                    })
+                    .ok();
             }
             Some(BuildOutput {
                 action: Stop,
@@ -323,13 +345,17 @@ fn build<'a>(
                 if let Some(drv) = running.remove(&id) {
                     match outputs_exist(&drv) {
                         Ok(true) => {
-                            println!("Built {drv}.");
                             if let Some(built) = ret.built.get_mut(&drv) {
                                 *built = true;
                             }
+                            running_modified
+                                .send(BuildState {
+                                    drv,
+                                    state: BuildStateE::Success,
+                                })
+                                .ok();
                         }
                         Ok(false) => {
-                            println!("Failed to build {drv}.");
                             if let Some(rdep) = rdep_info.get(&drv) {
                                 for host in rdep {
                                     ret.deps_failed
@@ -339,7 +365,13 @@ fn build<'a>(
                                 }
                             }
                             let log = build_log(&drv);
-                            ret.failed_logs.insert(drv, log);
+                            ret.failed_logs.insert(drv.clone(), log);
+                            running_modified
+                                .send(BuildState {
+                                    drv,
+                                    state: BuildStateE::Fail,
+                                })
+                                .ok();
                         }
                         Err(e) => eprintln!("{e:?}"),
                     }
@@ -439,4 +471,45 @@ fn keep_drv(drv: &str) {
             .status()
             .ok();
     };
+}
+
+fn debounce_report(c: mpsc::Receiver<BuildState>) {
+    let mut timeout = Option::<Instant>::None;
+    let mut running = HashSet::<String>::new();
+    loop {
+        let recv = match timeout {
+            Some(timeout) => c.recv_timeout(timeout.saturating_duration_since(Instant::now())),
+            None => c.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        timeout.get_or_insert_with(|| Instant::now() + Duration::from_secs(10));
+        match recv {
+            Ok(BuildState { drv, state }) => match state {
+                BuildStateE::Start => {
+                    running.insert(drv);
+                }
+                BuildStateE::Success => {
+                    running.remove(&drv);
+                    println!("Built: {drv}");
+                }
+                BuildStateE::Fail => {
+                    running.remove(&drv);
+                    println!("Failed to build {drv}.");
+                }
+            },
+            Err(e) => {
+                let mut report = String::new();
+                if !running.is_empty() {
+                    report += "Running:\n";
+                    for d in &running {
+                        report += &format!("  {d}\n");
+                    }
+                }
+                print!("{report}");
+                match e {
+                    RecvTimeoutError::Timeout => timeout = None,
+                    RecvTimeoutError::Disconnected => return,
+                }
+            }
+        }
+    }
 }
