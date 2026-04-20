@@ -69,7 +69,8 @@ fn main() {
             .values()
             .filter_map(|e| e.eval.as_ref())
             .flat_map(|e| e.values())
-            .filter_map(|e| e.drv.as_deref()),
+            .filter(|e| e.drv.is_some())
+            .collect(),
         rdeps,
         building_send,
     ));
@@ -188,40 +189,53 @@ fn evals(flake: &str, deps: &mut DepInfo) -> Evals {
 
 fn eval_host(locked: &str, flake: &str, host: &str, deps: &mut DepInfo) -> (String, Eval) {
     let mut ret = Eval::default();
-    let host_path =
-        format!("{locked}#nixosConfigurations.{host}.config.system.build.toplevel.drvPath");
+    let host_path = format!("{locked}#nixosConfigurations.{host}.config.system.build");
     if host.chars().any(|c| !c.is_alphanumeric()) {
         ret.msgs
             .push(format!("META: Ignoring non-alphanumeric hostname {host}"));
     } else {
-        let shellout = Command::new("nix")
-            .args(["eval", "--log-format", "internal-json", "--raw", &host_path])
-            .output()
-            .expect("failed to execute process");
-        for line in shellout.stderr.split(|&c| c == b'\n') {
+        #[derive(Deserialize, Debug)]
+        struct EH {
+            drv: String,
+            grp: Option<String>,
+        }
+        let shellout = nix_and_deserialize::<EH>(&[
+            "eval",
+            "--log-format",
+            "internal-json",
+            "--json",
+            &host_path,
+            "--apply",
+            "s: {drv = s.toplevel.drvPath; grp = s.sfbs-group or null; }",
+        ]);
+        for line in shellout.log.split(|c| c == '\n') {
             if line.is_empty() {
                 continue;
             }
             let msg = line
-                .strip_prefix(b"@nix ")
-                .and_then(|msg| serde_json::from_slice::<NixMsg>(msg).ok());
+                .strip_prefix("@nix ")
+                .and_then(|msg| serde_json::from_str::<NixMsg>(msg).ok());
             match msg {
                 Some(msg) => ret.msgs.append(&mut msg.msg.into_iter().collect()),
-                None => ret.stderr.push(String::from_utf8_lossy(line).into()),
+                None => ret.stderr.push(line.to_owned()),
             }
         }
-        if shellout.status.success() {
-            let drv = String::from_utf8(shellout.stdout)
-                .expect("Non-UTF8 derivation path. Try annoying somebody else.");
-            println!("{flake}#{host} evaluated to {drv}");
-            keep_drv(&drv);
-            read_deps(drv.clone(), deps);
-            ret.drv = Some(drv);
-        } else {
-            println!(
-                "{locked}#{host} failed to evaluate:\n{}\n",
-                ret.msgs.join("\n")
-            )
+        match shellout.data {
+            Some(eval) => {
+                let EH { drv, grp } =
+                    eval.expect("Eval succeeded but didn't return required structure");
+                println!("{flake}#{host} evaluated to {drv}");
+                keep_drv(&drv);
+                read_deps(drv.clone(), deps);
+                ret.drv = Some(drv);
+                ret.group = grp;
+            }
+            None => {
+                println!(
+                    "{locked}#{host} failed to evaluate:\n{}\n",
+                    ret.msgs.join("\n")
+                )
+            }
         }
     }
     (host.to_owned(), ret)
@@ -230,7 +244,6 @@ fn eval_host(locked: &str, flake: &str, host: &str, deps: &mut DepInfo) -> (Stri
 fn nix_and_deserialize<T>(args: &[&str]) -> NixDeserialized<T>
 where
     T: DeserializeOwned,
-    T: Default,
 {
     let mut ret = NixDeserialized::<T>::default();
     let shellout = Command::new("nix")
@@ -266,33 +279,44 @@ structstruck::strike! {
 }
 
 fn build<'a>(
-    root_drvs: impl Iterator<Item = &'a str>,
+    mut root_drvs: Vec<&Eval>,
     rdep_info: HashMap<String, HashSet<Rc<String>>>,
     running_modified: mpsc::Sender<BuildState>,
 ) -> Builds {
     let mut ret = Builds::default();
+    root_drvs.sort_by_key(|d| (d.group.is_none(), &d.group));
+    ret.built = root_drvs
+        .iter()
+        .map(|d| (d.drv.clone().unwrap(), false))
+        .collect();
+    for root_drv in root_drvs {
+        let drv = root_drv.drv.as_ref().unwrap();
+        if ret.deps_failed.contains_key(drv) {
+            println!("Skipping attempt for {drv}, already has failed deps");
+            continue;
+        }
+        build_host(drv, &rdep_info, &running_modified, &mut ret);
+    }
+    ret
+}
+
+fn build_host(
+    drv: &String,
+    rdep_info: &HashMap<String, HashSet<Rc<String>>>,
+    running_modified: &mpsc::Sender<BuildState>,
+    ret: &mut Builds,
+) {
     let mut running = HashMap::<u64, String>::new();
-    ret.built = root_drvs.map(|d| (d.to_owned(), false)).collect();
-    let root_outs = ret
-        .built
-        .keys()
-        .map(|s| format!("{s}^out"))
-        .collect::<Vec<_>>();
+    println!("Building {drv}");
     let mut shellout = Command::new("nix")
-        .args([
-            "build",
-            "--log-format",
-            "internal-json",
-            "--no-link",
-            "--keep-going",
-        ])
+        .args(["build", "--log-format", "internal-json", "--no-link"])
         .args(
             ARGS.build_args
                 .as_ref()
                 .map(|args| unescape_split(args))
                 .unwrap_or(vec![]),
         )
-        .args(root_outs)
+        .arg(format!("{drv}^out"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -389,7 +413,6 @@ fn build<'a>(
             }
         }
     }
-    ret
 }
 
 fn build_log(drv: &str) -> Option<(String, String)> {

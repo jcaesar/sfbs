@@ -13,6 +13,7 @@ structstruck::strike! {
             hosts: Option<NixDeserialized<Vec<String>>>,
             eval: Option<HashMap<String, struct {
                 drv: Option<String>,
+                group: Option<String>,
                 msgs: Vec<String>,
                 stderr: Vec<String>,
             }>>,
@@ -49,9 +50,17 @@ structstruck::strike! {
     }
 }
 
-#[derive(Deserialize, Serialize, Default, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[fully_pub]
 struct NixDeserialized<T> {
     log: String,
     data: Option<Result<T, String>>,
+}
+impl<T> Default for NixDeserialized<T> {
+    fn default() -> Self {
+        Self {
+            log: Default::default(),
+            data: Default::default(),
+        }
+    }
 }
