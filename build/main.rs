@@ -164,7 +164,12 @@ fn evals(flake: &str, deps: &mut DepInfo) -> Evals {
         flake,
     ]));
     if let Some(mi) = get_nix_des(&ret.lock) {
-        let locked = format!("{}?rev={}", mi.resolved_url, mi.locked.rev);
+        // i should add proper url parsing…
+        let sep = match mi.resolved_url.contains('?') {
+            false => '?',
+            true => '&',
+        };
+        let locked = format!("{}{sep}rev={}", mi.resolved_url, mi.locked.rev);
         ret.hosts = Some({
             nix_and_deserialize(&[
                 "eval",
