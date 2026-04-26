@@ -1,5 +1,5 @@
 #!/usr/bin/env nu
-# 
+ 
 let infod = (pwd)/builds
 let repos = [njx tunixgut]
 let branches = [HEAD autoflup]

@@ -317,7 +317,6 @@ fn build<'a>(
             continue;
         }
         build_host(drv, &rdep_info, &running_modified, builds!());
-        dbg!(i);
         if i != 0 {
             write_out(&*out);
         }

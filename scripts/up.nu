@@ -4,7 +4,6 @@ let dir = (pwd)/repos
 mkdir $dir
 let tmp = mktemp -t -d
 cd $tmp
-print $tmp
 
 def prep [repo] {
   let c = ($dir)/($repo)
