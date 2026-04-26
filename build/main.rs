@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::ffi::OsStr;
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write as _};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,7 +23,7 @@ struct Args {
     #[arg(short, long, required = true)]
     sysflake: Vec<String>,
     #[arg(short, long, env = "SFBS_OUTPUT", value_parser)]
-    output: clio::Output,
+    output: PathBuf,
     #[arg(short, long, env = "SFBS_BUILD_ARGS")]
     build_args: Option<String>,
 
@@ -49,10 +52,12 @@ fn main() {
     LazyLock::force(&ARGS);
     let mut out = Main::default();
     out.meta.start_time = unix_ts();
+    write_out(&out);
     let flakes = ARGS.sysflake.to_owned();
     let mut deps = HashMap::new();
     for flake in &flakes {
         out.evals.insert(flake.into(), evals(flake, &mut deps));
+        write_out(&out);
     }
     if ARGS.gc_after_link {
         Command::new("nix")
@@ -64,23 +69,21 @@ fn main() {
 
     let (building_send, building_recv) = mpsc::channel();
     std::thread::spawn(move || debounce_report(building_recv));
-    out.builds = Some(build(
-        out.evals
-            .values()
-            .filter_map(|e| e.eval.as_ref())
-            .flat_map(|e| e.values())
-            .filter(|e| e.drv.is_some())
-            .collect(),
-        rdeps,
-        building_send,
-    ));
+    build(&mut out, rdeps, building_send);
     out.meta.end_time = unix_ts();
 
+    write_out(&out);
+}
+
+fn write_out(out: &Main) {
+    let mut tmp = ARGS.output.clone().into_os_string();
+    tmp.push(OsStr::new(".tmp"));
     let out = serde_json::to_string_pretty(&out).expect("Output struct should serialize");
-    ARGS.to_owned()
-        .output
+    File::create(&tmp)
+        .expect("Failed to create temp output file")
         .write_all(out.as_bytes())
         .expect("Failed to write result");
+    std::fs::rename(tmp, &ARGS.output).expect("Failed to emplace output file");
 }
 
 fn make_machine_deps(
@@ -284,25 +287,41 @@ structstruck::strike! {
 }
 
 fn build<'a>(
-    mut root_drvs: Vec<&Eval>,
+    out: &mut Main,
     rdep_info: HashMap<String, HashSet<Rc<String>>>,
     running_modified: mpsc::Sender<BuildState>,
-) -> Builds {
-    let mut ret = Builds::default();
+) {
+    let mut root_drvs = out
+        .evals
+        .values()
+        .filter_map(|e| e.eval.as_ref())
+        .flat_map(|e| e.values())
+        .filter(|e| e.drv.is_some())
+        .collect::<Vec<_>>();
     root_drvs.sort_by_key(|d| (d.group.is_none(), &d.group));
-    ret.built = root_drvs
+    assert!(out.builds.is_none());
+    out.builds = Some(Default::default());
+    macro_rules! builds {
+        () => {
+            out.builds.as_mut().unwrap()
+        };
+    }
+    builds!().built = root_drvs
         .iter()
         .map(|d| (d.drv.clone().unwrap(), false))
         .collect();
-    for root_drv in root_drvs {
+    for (i, root_drv) in root_drvs.into_iter().rev().enumerate().rev() {
         let drv = root_drv.drv.as_ref().unwrap();
-        if ret.deps_failed.contains_key(drv) {
+        if builds!().deps_failed.contains_key(drv) {
             println!("Skipping attempt for {drv}, already has failed deps");
             continue;
         }
-        build_host(drv, &rdep_info, &running_modified, &mut ret);
+        build_host(drv, &rdep_info, &running_modified, builds!());
+        dbg!(i);
+        if i != 0 {
+            write_out(&*out);
+        }
     }
-    ret
 }
 
 fn build_host(
