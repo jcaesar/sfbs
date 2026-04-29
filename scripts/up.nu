@@ -13,7 +13,7 @@ def prep [repo] {
   }
   git -C $c fetch
   git -C $c worktree prune
-  git -C $c worktree add -d ($tmp)/($repo)
+  git -C $c worktree add --detach ($tmp)/($repo) origin/HEAD
 }
 def commit [repo] {
   let c = ($tmp)/($repo)
