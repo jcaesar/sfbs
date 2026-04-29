@@ -521,41 +521,62 @@ fn keep_drv(drv: &str) {
 
 fn debounce_report(c: mpsc::Receiver<BuildState>) {
     let mut timeout = Option::<Instant>::None;
-    let mut running = HashSet::<String>::new();
+    let mut running = HashMap::<String, Instant>::new();
     loop {
         let recv = match timeout {
             Some(timeout) => c.recv_timeout(timeout.saturating_duration_since(Instant::now())),
             None => c.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
-        timeout.get_or_insert_with(|| Instant::now() + Duration::from_secs(10));
+        let now = Instant::now();
+        const SECS10: Duration = Duration::from_secs(10);
+        timeout.get_or_insert_with(|| now + SECS10);
         match recv {
             Ok(BuildState { drv, state }) => match state {
                 BuildStateE::Start => {
-                    running.insert(drv);
+                    running.insert(drv, now);
                 }
-                BuildStateE::Success => {
-                    running.remove(&drv);
-                    println!("Built: {drv}");
-                }
+                BuildStateE::Success => match running.remove(&drv) {
+                    Some(start) => {
+                        println!("Built: {drv} in {}", humantime(now.duration_since(start)))
+                    }
+                    None => println!("Built: {drv} (which never started…?)"),
+                },
                 BuildStateE::Fail => {
                     running.remove(&drv);
                     println!("Failed to build {drv}.");
                 }
             },
             Err(e) => {
-                let mut report = String::new();
-                if !running.is_empty() {
-                    report += "Running:\n";
-                    for d in &running {
-                        report += &format!("  {d}\n");
+                let shortest = running.values().map(|&t| now.duration_since(t)).min();
+                let report = matches!(shortest, Some(s) if s >= SECS10);
+                if report {
+                    let mut report = String::new() + "Running:\n";
+                    for (d, &start) in &running {
+                        let running_for = now.saturating_duration_since(start);
+                        report += &format!("  {d} for {}\n", humantime(running_for));
                     }
+                    print!("{report}");
                 }
-                print!("{report}");
-                match e {
-                    RecvTimeoutError::Timeout => timeout = None,
-                    RecvTimeoutError::Disconnected => return,
+                timeout = shortest.filter(|_| !report).map(|s| now + SECS10 - s);
+                if let RecvTimeoutError::Disconnected = e {
+                    return;
                 }
             }
         }
+    }
+}
+
+fn humantime(d: Duration) -> String {
+    let d = d.as_secs();
+    if d < 1 {
+        "<1s".into()
+    } else if d < 60 {
+        format!("{d}s")
+    } else if d < 3600 {
+        format!("{}m {}s", d / 60, d % 60)
+    } else if d < 86400 {
+        format!("{}h {}m", d / 3600, d / 60 % 60)
+    } else {
+        format!("{}d {}h", d / 86400, d / 3600 % 24)
     }
 }
